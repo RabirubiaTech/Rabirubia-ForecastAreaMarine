@@ -17,8 +17,13 @@ from pathlib import Path
 import urllib.request
 
 # ─────────────────────────────────────────────
-# NWS zone URLs — direct NOAA text, no API key
+# NWS URLs
+# FZCA52 is the full combined PR/USVI forecast
+# that contains the SYNOPSIS block at the top.
+# Individual zone files are fetched for per-zone data.
 # ─────────────────────────────────────────────
+NWS_SYNOPSIS_URL = "https://tgftp.nws.noaa.gov/data/forecasts/marine/coastal/am/amz711.txt"
+
 NWS_ZONES = {
     "atlantic":  "https://tgftp.nws.noaa.gov/data/forecasts/marine/coastal/am/amz711.txt",
     "north_pr":  "https://tgftp.nws.noaa.gov/data/forecasts/marine/coastal/am/amz712.txt",
@@ -26,18 +31,19 @@ NWS_ZONES = {
     "caribbean": "https://tgftp.nws.noaa.gov/data/forecasts/marine/coastal/am/amz733.txt",
 }
 
-SCRIPT_DIR  = Path(__file__).parent
-OUTPUT_DIR  = Path(os.environ.get("OUTPUT_DIR", SCRIPT_DIR.parent / "output"))
+# Full combined forecast — contains the synopsis for all PR/USVI waters
+NWS_COMBINED_URL = "https://tgftp.nws.noaa.gov/data/raw/fz/fzca52.tjsj.cwf.sju.txt"
+
+SCRIPT_DIR   = Path(__file__).parent
+OUTPUT_DIR   = Path(os.environ.get("OUTPUT_DIR", SCRIPT_DIR.parent / "output"))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 FIXED_OUTPUT = OUTPUT_DIR / "marine_forecast.jpg"
 
 
 # ─────────────────────────────────────────────
-# Load logo from logo.jpg in the scripts/ folder
+# Load logo.jpg from scripts/ folder
 # ─────────────────────────────────────────────
 def load_logo() -> str:
-    """Return base64-encoded logo string, or empty string if not found."""
-    # Try logo.jpg sitting next to this script
     for candidate in [
         SCRIPT_DIR / "logo.jpg",
         SCRIPT_DIR / "logo.png",
@@ -45,18 +51,16 @@ def load_logo() -> str:
         SCRIPT_DIR.parent / "logo.png",
     ]:
         if candidate.exists():
-            print(f"  Logo loaded from: {candidate}")
-            raw = candidate.read_bytes()
-            return base64.b64encode(raw).decode("utf-8")
-
-    print("  WARNING: No logo.jpg found — logo will be blank", file=sys.stderr)
+            print(f"  Logo loaded: {candidate}")
+            return base64.b64encode(candidate.read_bytes()).decode("utf-8")
+    print("  WARNING: No logo.jpg found", file=sys.stderr)
     return ""
 
 
 # ─────────────────────────────────────────────
-# Fetch NWS text
+# Fetch any URL
 # ─────────────────────────────────────────────
-def fetch_nws(url: str) -> str:
+def fetch_url(url: str) -> str:
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "RabirubiaWeather/1.0"})
         with urllib.request.urlopen(req, timeout=20) as r:
@@ -64,6 +68,42 @@ def fetch_nws(url: str) -> str:
     except Exception as e:
         print(f"  WARNING: Could not fetch {url}: {e}", file=sys.stderr)
         return ""
+
+
+# ─────────────────────────────────────────────
+# Extract synopsis from the combined forecast
+# ─────────────────────────────────────────────
+def fetch_synopsis() -> str:
+    """
+    The combined FZCA52 product has a SYNOPSIS block near the top
+    before the individual zone sections begin.
+    """
+    text = fetch_url(NWS_COMBINED_URL)
+    if not text:
+        # Fallback: try the individual atlantic zone file
+        text = fetch_url(NWS_SYNOPSIS_URL)
+    if not text:
+        return ""
+
+    # Match .SYNOPSIS... block — ends when next period-header or $$ appears
+    m = re.search(
+        r"\.SYNOPSIS\.\.\.(.+?)(?=\n\.[A-Z]|\$\$|\Z)",
+        text, re.DOTALL | re.IGNORECASE
+    )
+    if m:
+        syn = re.sub(r"\s+", " ", m.group(1).strip())
+        return syn[:420]
+
+    # Fallback: look for SYNOPSIS keyword on its own line
+    m = re.search(
+        r"SYNOPSIS[^\n]*\n(.+?)(?=\n[A-Z]{3}[0-9]|\$\$|\nAMZ|\Z)",
+        text, re.DOTALL | re.IGNORECASE
+    )
+    if m:
+        syn = re.sub(r"\s+", " ", m.group(1).strip())
+        return syn[:420]
+
+    return ""
 
 
 # ─────────────────────────────────────────────
@@ -76,7 +116,6 @@ def parse_zone(text: str) -> dict:
         "seas": "Check NWS",
         "wave_detail": "",
         "advisory": "",
-        "synopsis": "",
         "precip": "",
     }
     if not text:
@@ -89,15 +128,6 @@ def parse_zone(text: str) -> dict:
     )
     if adv:
         data["advisory"] = adv.group(1).strip().title()
-
-    # Synopsis block
-    syn_match = re.search(
-        r"SYNOPSIS[^\n]*\n(.*?)(?=\n[A-Z]{3}\d{6}|\nAMZ|\Z)",
-        text, re.DOTALL | re.IGNORECASE
-    )
-    if syn_match:
-        syn = re.sub(r"\s+", " ", syn_match.group(1).strip())
-        data["synopsis"] = syn[:400]
 
     # TODAY section
     today = re.search(
@@ -176,18 +206,13 @@ def get_advisories(zones: dict) -> list:
                 found.add("Hurricane Force Wind Warning")
             else:
                 found.add(adv)
-    syn = " ".join(z.get("synopsis", "") for z in zones.values()).lower()
-    if "rip current" in syn:
-        found.add("Rip Currents")
-    if "breaking wave" in syn or "hazardous surf" in syn:
-        found.add("Breaking Waves")
     return sorted(found) if found else ["No Active Advisories"]
 
 
 # ─────────────────────────────────────────────
 # Build HTML card
 # ─────────────────────────────────────────────
-def build_html(zones: dict, date_str: str, logo_b64: str) -> str:
+def build_html(zones: dict, synopsis: str, date_str: str, time_str: str, logo_b64: str) -> str:
     atl = zones["atlantic"]
     npr = zones["north_pr"]
     epr = zones["east_pr"]
@@ -198,17 +223,13 @@ def build_html(zones: dict, date_str: str, logo_b64: str) -> str:
     has_warning = any("advisory" in a.lower() or "warning" in a.lower() for a in advisories)
     alert_bg    = "#8b0000, #cc1616, #8b0000" if has_warning else "#0a4a00, #0c7a00, #0a4a00"
 
-    synopsis = (atl.get("synopsis") or npr.get("synopsis") or
-                epr.get("synopsis") or "Forecast data unavailable. Check NWS San Juan.")
-    synopsis = synopsis[:390]
+    if not synopsis:
+        synopsis = "Synopsis unavailable — visit weather.gov/sju for current marine forecast."
 
     tags_html = "".join('<span class="tag">' + a + '</span>' for a in advisories)
 
-    # Logo img tag — use base64 data URI if available, else hide
-    if logo_b64:
-        logo_img = '<img class="logo" src="data:image/jpeg;base64,' + logo_b64 + '"/>'
-    else:
-        logo_img = '<div style="width:88px;height:88px"></div>'
+    logo_img = ('<img class="logo" src="data:image/jpeg;base64,' + logo_b64 + '"/>'
+                if logo_b64 else '<div style="width:88px;height:88px"></div>')
 
     def zone_td(z, cls, name):
         return (
@@ -242,55 +263,79 @@ def build_html(zones: dict, date_str: str, logo_b64: str) -> str:
 body{width:1080px;height:1080px;overflow:hidden;background:#060e1f;font-family:Arial,Helvetica,sans-serif}
 .card{width:1080px;height:1080px;background:linear-gradient(145deg,#060e1f 0%,#0a1f3d 45%,#071428 100%);display:table}
 .ci{display:table-cell;vertical-align:top}
+
+/* ── HEADER ── */
 .hdr{background:linear-gradient(135deg,#0d2050,#142e6e);padding:18px 28px;border-bottom:4px solid #cc1818}
 .hdr table{width:100%;border-collapse:collapse}
 .hdr td{vertical-align:middle;padding:0}
 .logo{width:88px;height:88px;object-fit:contain;display:block}
-.brand{font-family:'Arial Black',Impact,sans-serif;font-size:36px;font-weight:900;color:#fff;letter-spacing:2px;text-transform:uppercase;line-height:1}
-.sub{font-size:13px;color:#7ec8e3;letter-spacing:3px;text-transform:uppercase;margin-top:5px}
-.datebig{font-family:'Arial Black',Impact,sans-serif;font-size:52px;font-weight:900;color:#dd1c1c;line-height:1;text-align:right}
-.datesml{font-size:12px;color:#7a9bb5;letter-spacing:2px;text-transform:uppercase;text-align:right;margin-top:3px}
-.alert{background:linear-gradient(90deg,""" + alert_bg + """);padding:10px 28px;color:#fff;font-family:'Arial Narrow',Arial,sans-serif;font-size:15px;font-weight:700;letter-spacing:2px;text-transform:uppercase}
+.brand{font-family:'Arial Black',Impact,sans-serif;font-size:36px;font-weight:900;color:#ffffff;letter-spacing:2px;text-transform:uppercase;line-height:1}
+.sub{font-size:13px;color:#aaddff;letter-spacing:3px;text-transform:uppercase;margin-top:5px}
+.datebig{font-family:'Arial Black',Impact,sans-serif;font-size:48px;font-weight:900;color:#dd1c1c;line-height:1;text-align:right}
+/* TIME — bright white, clearly visible */
+.datetime{font-family:'Arial Black',Impact,sans-serif;font-size:16px;font-weight:900;color:#ffffff;letter-spacing:2px;text-transform:uppercase;text-align:right;margin-top:5px}
+
+/* ── ALERT BANNER ── */
+.alert{background:linear-gradient(90deg,""" + alert_bg + """);padding:10px 28px;color:#ffffff;font-family:'Arial Narrow',Arial,sans-serif;font-size:15px;font-weight:700;letter-spacing:2px;text-transform:uppercase}
+
+/* ── ZONE GRID ── */
 .grid{width:100%;padding:12px 16px 8px;display:block}
 .gt{width:100%;border-collapse:separate;border-spacing:8px}
-.gt td{width:25%;vertical-align:top;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:14px}
-.z1{border-top:3px solid #1565c0!important}
-.z2{border-top:3px solid #0277bd!important}
-.z3{border-top:3px solid #00838f!important}
-.z4{border-top:3px solid #00695c!important}
-.zone-name{font-family:'Arial Narrow',Arial,sans-serif;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#7ec8e3;margin-bottom:10px;line-height:1.4;border-bottom:2px solid rgba(255,255,255,.1);padding-bottom:7px}
+.gt td{width:25%;vertical-align:top;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.15);border-radius:10px;padding:14px}
+.z1{border-top:3px solid #1e88e5!important}
+.z2{border-top:3px solid #0288d1!important}
+.z3{border-top:3px solid #00acc1!important}
+.z4{border-top:3px solid #00897b!important}
+.zone-name{font-family:'Arial Narrow',Arial,sans-serif;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;
+           color:#aaddff;margin-bottom:10px;line-height:1.4;border-bottom:2px solid rgba(255,255,255,.15);padding-bottom:7px}
 .stat{margin-bottom:9px}
-.stat-lbl{font-size:9px;color:#4a7a9a;text-transform:uppercase;letter-spacing:1.5px;line-height:1}
-.stat-val{font-family:'Arial Black',Impact,sans-serif;font-size:20px;font-weight:900;color:#e0f0ff;line-height:1.1}
-.stat-note{font-size:11px;color:#5ba8cc;line-height:1.3}
+.stat-lbl{font-size:9px;color:#88bbdd;text-transform:uppercase;letter-spacing:1.5px;line-height:1;margin-bottom:2px}
+/* WHITE data values */
+.stat-val{font-family:'Arial Black',Impact,sans-serif;font-size:20px;font-weight:900;color:#ffffff;line-height:1.1}
+/* WHITE detail notes */
+.stat-note{font-size:11px;color:#ffffff;line-height:1.3}
+
+/* ── BOTTOM ROW ── */
 .bt{width:100%;border-collapse:separate;border-spacing:8px}
-.bt td{vertical-align:top;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:14px}
-.stitle{font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#7ec8e3;margin-bottom:8px}
-.stext{font-size:12.5px;color:#9ab8d0;line-height:1.6}
+.bt td{vertical-align:top;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:14px}
+.stitle{font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#aaddff;margin-bottom:8px}
+/* WHITE bottom stat values */
+.bval{font-family:'Arial Black',Impact,sans-serif;font-size:18px;font-weight:900;color:#ffffff;line-height:1.1;margin-bottom:2px}
+.bnote{font-size:11px;color:#ffffff;line-height:1.4}
+.blbl{font-size:9px;color:#88bbdd;text-transform:uppercase;letter-spacing:1.5px;line-height:1;margin-bottom:2px}
+/* Synopsis text white */
+.stext{font-size:12.5px;color:#ffffff;line-height:1.6}
 .tags{margin-top:10px}
-.tag{display:inline-block;background:rgba(160,20,20,.25);border:1px solid rgba(200,40,40,.5);border-radius:20px;padding:4px 11px;font-size:10.5px;color:#ff8888;letter-spacing:.8px;text-transform:uppercase;font-weight:700;margin:3px 3px 0 0}
-.ftr{background:rgba(0,0,0,.4);border-top:1px solid rgba(255,255,255,.07);padding:10px 28px}
+.tag{display:inline-block;background:rgba(160,20,20,.3);border:1px solid rgba(220,60,60,.6);
+     border-radius:20px;padding:4px 11px;font-size:10.5px;color:#ffaaaa;
+     letter-spacing:.8px;text-transform:uppercase;font-weight:700;margin:3px 3px 0 0}
+
+/* ── FOOTER ── */
+.ftr{background:rgba(0,0,0,.4);border-top:1px solid rgba(255,255,255,.1);padding:10px 28px}
 .ftr table{width:100%;border-collapse:collapse}
-.fsrc{font-size:11px;color:#3a5a7a}
-.furl{font-family:'Arial Narrow',Arial,sans-serif;font-size:17px;font-weight:700;color:#1e88e5;letter-spacing:1px;text-align:right}
+.fsrc{font-size:11px;color:#6699bb}
+.furl{font-family:'Arial Narrow',Arial,sans-serif;font-size:17px;font-weight:700;color:#4db8ff;letter-spacing:1px;text-align:right}
 </style></head>
 <body>
 <div class="card"><div class="ci">
 
+<!-- HEADER -->
 <div class="hdr"><table><tr>
   <td style="width:100px">""" + logo_img + """</td>
   <td style="padding-left:14px">
     <div class="brand">Rabirubia Weather</div>
     <div class="sub">Marine Forecast &mdash; PR &amp; USVI</div>
   </td>
-  <td style="width:220px">
+  <td style="width:230px">
     <div class="datebig">""" + date_str + """</div>
-    <div class="datesml">AST</div>
+    <div class="datetime">""" + time_str + """ AST</div>
   </td>
 </tr></table></div>
 
+<!-- ADVISORY BANNER -->
 <div class="alert">""" + adv_text + """</div>
 
+<!-- ZONE GRID -->
 <div class="grid"><table class="gt"><tr>
   """ + zone_td(atl, "z1", "Atlantic Offshore<br>(10NM &ndash; 19.5&deg;N)") + """
   """ + zone_td(npr, "z2", "Northern PR Coast<br>(out 10 NM)") + """
@@ -298,38 +343,44 @@ body{width:1080px;height:1080px;overflow:hidden;background:#060e1f;font-family:A
   """ + zone_td(car, "z4", "Caribbean Waters<br>PR + St. Croix") + """
 </tr></table></div>
 
+<!-- BOTTOM ROW -->
 <div style="padding:0 16px 8px"><table class="bt"><tr>
+
   <td style="width:25%">
     <div class="stitle">Swell Summary</div>
     <div class="stat">
-      <div class="stat-lbl">Atlantic Swell</div>
-      <div class="stat-val" style="font-size:18px">""" + atl["seas"] + """</div>
-      <div class="stat-note">""" + (atl["wave_detail"] or "&mdash;") + """</div>
+      <div class="blbl">Atlantic Swell</div>
+      <div class="bval">""" + atl["seas"] + """</div>
+      <div class="bnote">""" + (atl["wave_detail"] or "&mdash;") + """</div>
     </div>
     <div class="stat">
-      <div class="stat-lbl">Caribbean Seas</div>
-      <div class="stat-val" style="font-size:18px">""" + car["seas"] + """</div>
-      <div class="stat-note">""" + (car["wave_detail"] or "&mdash;") + """</div>
+      <div class="blbl">Caribbean Seas</div>
+      <div class="bval">""" + car["seas"] + """</div>
+      <div class="bnote">""" + (car["wave_detail"] or "&mdash;") + """</div>
     </div>
   </td>
+
   <td style="width:25%">
     <div class="stitle">Conditions</div>
     <div class="stat">
-      <div class="stat-lbl">Precip</div>
-      <div class="stat-note" style="font-size:12px;color:#9ab8d0">""" + precip + """</div>
+      <div class="blbl">Precip</div>
+      <div class="bnote">""" + precip + """</div>
     </div>
     <div class="stat">
-      <div class="stat-lbl">Fishing</div>
-      <div class="stat-note" style="font-size:12px;color:#9ab8d0">""" + fishing + """</div>
+      <div class="blbl">Fishing</div>
+      <div class="bnote">""" + fishing + """</div>
     </div>
   </td>
+
   <td style="width:50%">
     <div class="stitle">Synopsis</div>
     <div class="stext">""" + synopsis + """</div>
     <div class="tags">""" + tags_html + """</div>
   </td>
+
 </tr></table></div>
 
+<!-- FOOTER -->
 <div class="ftr"><table><tr>
   <td class="fsrc">Source: NWS San Juan &middot; NOAA</td>
   <td class="furl">www.rabirubiaweather.com</td>
@@ -341,6 +392,8 @@ body{width:1080px;height:1080px;overflow:hidden;background:#060e1f;font-family:A
 
 # ─────────────────────────────────────────────
 # Render HTML → JPG
+# wkhtmltoimage exits 1/2 for font/network warnings
+# even when image renders fine — check file exists.
 # ─────────────────────────────────────────────
 def render_jpg(html: str, output_path: Path) -> bool:
     with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w", encoding="utf-8") as f:
@@ -355,8 +408,6 @@ def render_jpg(html: str, output_path: Path) -> bool:
              "--quality", "95", "--log-level", "none", "--format", "jpg",
              tmp_html, raw_jpg],
             capture_output=True, text=True,
-            # Do NOT use check=True — wkhtmltoimage returns non-zero
-            # for font/network warnings even when image renders fine
         )
 
         if not Path(raw_jpg).exists() or Path(raw_jpg).stat().st_size < 5000:
@@ -365,7 +416,7 @@ def render_jpg(html: str, output_path: Path) -> bool:
 
         try:
             from PIL import Image
-            img = Image.open(raw_jpg)
+            img     = Image.open(raw_jpg)
             cropped = img.crop((0, 0, 1080, min(730, img.size[1])))
             cropped.resize((1080, 1080), Image.LANCZOS).save(str(output_path), "JPEG", quality=95)
         except ImportError:
@@ -386,17 +437,25 @@ def render_jpg(html: str, output_path: Path) -> bool:
 # Main
 # ─────────────────────────────────────────────
 def main():
-    now      = datetime.now()
-    date_str = now.strftime("%b %d").upper()
+    # Puerto Rico is always AST = UTC-4 (no daylight saving)
+    from datetime import timezone, timedelta
+    ast      = timezone(timedelta(hours=-4))
+    now      = datetime.now(ast)
+    date_str = now.strftime("%b %d").upper()   # e.g. FEB 27
+    time_str = now.strftime("%-I:%M %p")       # e.g. 6:30 AM
 
-    print("Rabirubia Weather Card Generator — " + date_str)
+    print("Rabirubia Weather Card Generator — " + date_str + " " + time_str + " AST")
     print("Output: " + str(FIXED_OUTPUT))
 
     print("Loading logo...")
     logo_b64 = load_logo()
 
-    print("Fetching NWS forecasts...")
-    raw = {name: fetch_nws(url) for name, url in NWS_ZONES.items()}
+    print("Fetching synopsis...")
+    synopsis = fetch_synopsis()
+    print("  Synopsis: " + (synopsis[:80] + "..." if synopsis else "NOT FOUND"))
+
+    print("Fetching zone forecasts...")
+    raw   = {name: fetch_url(url) for name, url in NWS_ZONES.items()}
 
     print("Parsing forecast data...")
     zones = {name: parse_zone(text) for name, text in raw.items()}
@@ -404,7 +463,7 @@ def main():
         print("  " + name + ": wind=" + z["wind"] + " | seas=" + z["seas"])
 
     print("Rendering image...")
-    html    = build_html(zones, date_str, logo_b64)
+    html    = build_html(zones, synopsis, date_str, time_str, logo_b64)
     success = render_jpg(html, FIXED_OUTPUT)
 
     if success:
