@@ -1,0 +1,65 @@
+name: 🌊 Daily Marine Weather Card
+
+on:
+  # 6:30 AM AST = 10:30 AM UTC (AST is UTC-4)
+  schedule:
+    - cron: "30 10 * * *"
+
+  # Also allow manual trigger from GitHub UI
+  workflow_dispatch:
+
+jobs:
+  generate-card:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # ── 1. Checkout repo ──────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Set up Python ─────────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ── 3. Install wkhtmltoimage ──────────────────────────────────
+      - name: Install wkhtmltoimage
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq wkhtmltopdf
+          wkhtmltoimage --version
+
+      # ── 4. Install Python dependencies ───────────────────────────
+      - name: Install Python packages
+        run: pip install Pillow
+
+      # ── 5. Generate the weather card ─────────────────────────────
+      - name: Generate marine weather card
+        run: |
+          mkdir -p output
+          python scripts/generate_card.py
+        env:
+          OUTPUT_DIR: output
+
+      # ── 6. Upload card as artifact (viewable in GitHub Actions) ──
+      - name: Upload card artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: marine-weather-card-${{ github.run_id }}
+          path: output/rabirubia_marine_latest.jpg
+          retention-days: 30
+
+      # ── 7. Commit the new image back to the repo ─────────────────
+      #    The image will be in output/ folder in your repo.
+      #    Optional: comment out this step if you don't want to commit images.
+      - name: Commit image to repository
+        run: |
+          git config user.name  "Rabirubia Weather Bot"
+          git config user.email "bot@rabirubiaweather.com"
+          git add output/
+          git diff --staged --quiet || git commit -m "🌊 Marine weather card $(date +'%Y-%m-%d')"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
