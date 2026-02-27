@@ -23,7 +23,11 @@ import urllib.request
 # ─────────────────────────────────────────────
 NWS_COMBINED_URL  = "https://tgftp.nws.noaa.gov/data/raw/fz/fzca52.tjsj.cwf.sju.txt"
 NWS_SYNOPSIS_URL  = "https://tgftp.nws.noaa.gov/data/forecasts/marine/coastal/am/amz711.txt"
-NWS_FORECAST_URL  = "https://api.weather.gov/gridpoints/SJU/60,77/forecast"
+# /forecast gives null for PoP < 20% — use raw griddata for full values
+# Fallback: /forecast/hourly still has PoP, and detailedForecast text
+NWS_FORECAST_URL        = "https://api.weather.gov/gridpoints/SJU/60,77/forecast"
+NWS_FORECAST_HOURLY_URL = "https://api.weather.gov/gridpoints/SJU/60,77/forecast/hourly"
+NWS_GRIDDATA_URL        = "https://api.weather.gov/gridpoints/SJU/60,77"
 
 NWS_ZONES = {
     "atlantic":  "https://tgftp.nws.noaa.gov/data/forecasts/marine/coastal/am/amz711.txt",
@@ -230,30 +234,121 @@ def fetch_url(url: str, as_json: bool = False):
 # Rain probability
 # ─────────────────────────────────────────────
 def fetch_rain_probability() -> str:
-    data = fetch_url(NWS_FORECAST_URL, as_json=True)
-    if not data:
-        return "N/A"
-    try:
-        today_date = datetime.now(AST).date()
-        for period in data["properties"]["periods"]:
-            start_str = period.get("startTime", "")
-            try:
-                period_date = datetime.strptime(start_str[:10], "%Y-%m-%d").date()
-            except Exception:
-                continue
-            if period_date == today_date and period.get("isDaytime", True):
-                pop = period.get("probabilityOfPrecipitation", {})
-                val = pop.get("value") if isinstance(pop, dict) else pop
-                if val is not None:
-                    return str(int(val)) + "%"
-        # Fallback — first period
-        if data["properties"]["periods"]:
-            pop = data["properties"]["periods"][0].get("probabilityOfPrecipitation", {})
-            val = pop.get("value") if isinstance(pop, dict) else pop
-            if val is not None:
-                return str(int(val)) + "%"
-    except Exception as e:
-        print(f"  WARNING: Rain parse error: {e}", file=sys.stderr)
+    """
+    Multi-strategy PoP fetch.
+
+    Strategy 1 — Raw gridpoint data (most reliable, always has real values):
+      GET /gridpoints/SJU/60,77
+      properties.probabilityOfPrecipitation.values is a time-series of
+      {validTime: "ISO8601/duration", value: 0-100} entries.
+      Find the entry covering today AST daytime (6 AM – 6 PM) and take the max.
+
+    Strategy 2 — Hourly forecast (PoP still present here):
+      GET /gridpoints/SJU/60,77/forecast/hourly
+      Sum up daytime hours for today.
+
+    Strategy 3 — Parse the text from detailedForecast:
+      e.g. "Chance of showers. Precipitation likely. Chance of precipitation is 60%."
+    """
+    today = datetime.now(AST).date()
+
+    # ── Strategy 1: raw gridpoint time-series ─────────────────────────────
+    grid = fetch_url(NWS_GRIDDATA_URL, as_json=True)
+    if grid:
+        try:
+            values = grid["properties"]["probabilityOfPrecipitation"]["values"]
+            # Collect all PoP values whose validTime falls in today's daytime window (AST)
+            day_pops = []
+            for entry in values:
+                vt_str = entry.get("validTime", "")
+                # Format: "2026-02-27T10:00:00+00:00/PT1H"
+                iso_part = vt_str.split("/")[0]
+                # Parse the datetime
+                # Python 3.7+ fromisoformat doesn't handle +00:00 on all builds;
+                # strip offset and handle manually
+                try:
+                    # Remove offset suffix for simple parsing
+                    iso_clean = re.sub(r"[+-]\d{2}:\d{2}$", "", iso_part)
+                    offset_match = re.search(r"([+-]\d{2}):(\d{2})$", iso_part)
+                    offset_h = int(offset_match.group(1)) if offset_match else 0
+                    dt_utc = datetime.strptime(iso_clean, "%Y-%m-%dT%H:%M:%S").replace(
+                        tzinfo=timezone.utc
+                    ) - timedelta(hours=offset_h)
+                    dt_ast = dt_utc.astimezone(AST)
+                except Exception:
+                    continue
+                # Only count daytime hours (6 AM – 8 PM AST) for today
+                if dt_ast.date() == today and 6 <= dt_ast.hour <= 20:
+                    val = entry.get("value")
+                    if val is not None:
+                        day_pops.append(int(val))
+            if day_pops:
+                pop_val = max(day_pops)
+                print(f"  Rain PoP from griddata: {pop_val}% (from {len(day_pops)} hourly values)")
+                return str(pop_val) + "%"
+        except Exception as e:
+            print(f"  WARNING: griddata PoP parse error: {e}", file=sys.stderr)
+
+    # ── Strategy 2: hourly forecast ───────────────────────────────────────
+    hourly = fetch_url(NWS_FORECAST_HOURLY_URL, as_json=True)
+    if hourly:
+        try:
+            day_pops = []
+            for period in hourly["properties"]["periods"]:
+                start_str = period.get("startTime", "")
+                try:
+                    period_date = datetime.strptime(start_str[:10], "%Y-%m-%d").date()
+                    hour = int(start_str[11:13])
+                except Exception:
+                    continue
+                if period_date == today and period.get("isDaytime", True) and 6 <= hour <= 20:
+                    pop = period.get("probabilityOfPrecipitation", {})
+                    val = pop.get("value") if isinstance(pop, dict) else pop
+                    if val is not None:
+                        day_pops.append(int(val))
+            if day_pops:
+                pop_val = max(day_pops)
+                print(f"  Rain PoP from hourly: {pop_val}%")
+                return str(pop_val) + "%"
+        except Exception as e:
+            print(f"  WARNING: hourly PoP parse error: {e}", file=sys.stderr)
+
+    # ── Strategy 3: parse detailedForecast text ───────────────────────────
+    daily = fetch_url(NWS_FORECAST_URL, as_json=True)
+    if daily:
+        try:
+            for period in daily["properties"]["periods"]:
+                start_str = period.get("startTime", "")
+                try:
+                    period_date = datetime.strptime(start_str[:10], "%Y-%m-%d").date()
+                except Exception:
+                    continue
+                if period_date == today and period.get("isDaytime", True):
+                    text = period.get("detailedForecast", "")
+                    m = re.search(r"chance of precipitation is (\d+)%", text, re.IGNORECASE)
+                    if m:
+                        print(f"  Rain PoP from text: {m.group(1)}%")
+                        return m.group(1) + "%"
+                    # Also check shortForecast for clues
+                    short = period.get("shortForecast", "").lower()
+                    if "slight chance" in short:
+                        return "20%"
+                    if "chance" in short:
+                        return "40%"
+                    if "likely" in short:
+                        return "70%"
+                    if "showers" in short or "rain" in short:
+                        return "80%"
+                    # Clear / sunny / partly cloudy — low PoP (NWS suppresses < 20%)
+                    pop = period.get("probabilityOfPrecipitation", {})
+                    val = pop.get("value") if isinstance(pop, dict) else pop
+                    if val is not None:
+                        return str(int(val)) + "%"
+                    if any(w in short for w in ["sunny", "clear", "partly cloudy", "mostly sunny"]):
+                        return "< 20%"
+        except Exception as e:
+            print(f"  WARNING: text PoP parse error: {e}", file=sys.stderr)
+
     return "N/A"
 
 
