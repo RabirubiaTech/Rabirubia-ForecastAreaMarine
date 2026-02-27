@@ -29,6 +29,9 @@ NWS_FORECAST_URL        = "https://api.weather.gov/gridpoints/SJU/60,77/forecast
 NWS_FORECAST_HOURLY_URL = "https://api.weather.gov/gridpoints/SJU/60,77/forecast/hourly"
 NWS_GRIDDATA_URL        = "https://api.weather.gov/gridpoints/SJU/60,77"
 
+# Fajardo, PR (18.326, -65.652) -> NWS gridpoint SJU/78,50
+NWS_FAJARDO_URL = "https://api.weather.gov/gridpoints/SJU/78,50/forecast"
+
 NWS_ZONES = {
     "atlantic":  "https://tgftp.nws.noaa.gov/data/forecasts/marine/coastal/am/amz711.txt",
     "north_pr":  "https://tgftp.nws.noaa.gov/data/forecasts/marine/coastal/am/amz712.txt",
@@ -355,6 +358,75 @@ def fetch_rain_probability() -> str:
 # ─────────────────────────────────────────────
 # Synopsis
 # ─────────────────────────────────────────────
+def fetch_fajardo_temps() -> tuple:
+    """
+    Fetch today's high and low temperature for Fajardo, PR from NWS.
+    Returns (high_str, low_str) in Fahrenheit e.g. ("88°F", "74°F").
+    Looks at today's daytime period for high and tonight for low.
+    """
+    data = fetch_url(NWS_FAJARDO_URL, as_json=True)
+    if not data:
+        return "N/A", "N/A"
+    try:
+        today = datetime.now(AST).date()
+        high = None
+        low  = None
+        for period in data["properties"]["periods"]:
+            start_str = period.get("startTime", "")
+            try:
+                period_date = datetime.strptime(start_str[:10], "%Y-%m-%d").date()
+            except Exception:
+                continue
+            if period_date != today:
+                continue
+            temp = period.get("temperature")
+            unit = period.get("temperatureUnit", "F")
+            if temp is None:
+                continue
+            # Convert C to F if needed
+            if unit == "C":
+                temp = int(temp * 9 / 5 + 32)
+            if period.get("isDaytime", True):
+                high = str(temp) + "\u00b0F"
+            else:
+                low  = str(temp) + "\u00b0F"
+        # If low not found in today, grab the first night period
+        if low is None:
+            for period in data["properties"]["periods"]:
+                if not period.get("isDaytime", True):
+                    temp = period.get("temperature")
+                    unit = period.get("temperatureUnit", "F")
+                    if temp is not None:
+                        if unit == "C":
+                            temp = int(temp * 9 / 5 + 32)
+                        low = str(temp) + "\u00b0F"
+                        break
+        print(f"  Fajardo temps: high={high}, low={low}")
+        return high or "N/A", low or "N/A"
+    except Exception as e:
+        print(f"  WARNING: Fajardo temp parse error: {e}", file=sys.stderr)
+        return "N/A", "N/A"
+
+
+def thermometer_svg(size: int = 40) -> str:
+    """Simple thermometer SVG icon in warm red/orange."""
+    s = size
+    return (
+        f'<svg width="{s}" height="{s}" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">'
+        # Tube body
+        f'<rect x="16" y="4" width="8" height="22" rx="4" fill="#cc3300" opacity="0.85"/>'
+        # Mercury fill inside tube
+        f'<rect x="18" y="10" width="4" height="16" rx="2" fill="#ff6633"/>'
+        # Bulb
+        f'<circle cx="20" cy="31" r="7" fill="#ff4411"/>'
+        # Tick marks
+        f'<line x1="24" y1="12" x2="27" y2="12" stroke="#ffffff" stroke-width="1.5" opacity="0.7"/>'
+        f'<line x1="24" y1="17" x2="27" y2="17" stroke="#ffffff" stroke-width="1.5" opacity="0.7"/>'
+        f'<line x1="24" y1="22" x2="27" y2="22" stroke="#ffffff" stroke-width="1.5" opacity="0.7"/>'
+        f'</svg>'
+    )
+
+
 def fetch_synopsis() -> str:
     text = fetch_url(NWS_COMBINED_URL) or fetch_url(NWS_SYNOPSIS_URL)
     if not text:
@@ -457,6 +529,7 @@ def get_advisories(zones: dict) -> list:
 # ─────────────────────────────────────────────
 def build_html(zones, synopsis, date_str, time_str,
                rain_pct, moon_svg_str, moon_name, moon_illum,
+               temp_high, temp_low,
                logo_b64) -> str:
 
     atl = zones["atlantic"]
@@ -517,11 +590,11 @@ body{width:1080px;height:1080px;overflow:hidden;background:#060e1f;font-family:A
 
 /* INFO BAR */
 .infobar{background:rgba(0,0,0,0.4);border-bottom:1px solid rgba(255,255,255,0.12);padding:9px 28px;text-align:center}
-.pill{display:inline-block;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.18);border-radius:40px;padding:6px 24px 6px 10px;margin:0 12px;vertical-align:middle}
-.pill-icon{display:inline-block;vertical-align:middle;margin-right:10px}
+.pill{display:inline-block;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.18);border-radius:40px;padding:6px 18px 6px 10px;margin:0 7px;vertical-align:middle}
+.pill-icon{display:inline-block;vertical-align:middle;margin-right:8px}
 .pill-text{display:inline-block;vertical-align:middle;text-align:left}
 .pill-label{font-size:9px;color:#88bbdd;text-transform:uppercase;letter-spacing:1.5px;display:block;line-height:1;margin-bottom:3px}
-.pill-value{font-family:'Arial Black',Impact,sans-serif;font-size:17px;font-weight:900;color:#ffffff;letter-spacing:1px;display:block;line-height:1}
+.pill-value{font-family:'Arial Black',Impact,sans-serif;font-size:16px;font-weight:900;color:#ffffff;letter-spacing:1px;display:block;line-height:1}
 .pill-sub{font-size:10px;color:#aaccee;margin-top:2px;display:block}
 
 /* ADVISORY */
@@ -574,7 +647,7 @@ body{width:1080px;height:1080px;overflow:hidden;background:#060e1f;font-family:A
   </td>
 </tr></table></div>
 
-<!-- INFO BAR: Moon + Rain -->
+<!-- INFO BAR: Moon + Rain + Fajardo Temp -->
 <div class="infobar">
 
   <div class="pill">
@@ -592,6 +665,15 @@ body{width:1080px;height:1080px;overflow:hidden;background:#060e1f;font-family:A
       <span class="pill-label">Rain Probability Today</span>
       <span class="pill-value">""" + rain_pct + """</span>
       <span class="pill-sub">San Juan area</span>
+    </span>
+  </div>
+
+  <div class="pill">
+    <span class="pill-icon">""" + thermometer_svg(40) + """</span>
+    <span class="pill-text">
+      <span class="pill-label">Fajardo Temp Today</span>
+      <span class="pill-value">""" + temp_high + """ / """ + temp_low + """</span>
+      <span class="pill-sub">High / Low</span>
     </span>
   </div>
 
@@ -712,6 +794,9 @@ def main():
     rain_pct = fetch_rain_probability()
     print(f"  Rain probability: {rain_pct}")
 
+    print("Fetching Fajardo temperatures...")
+    temp_high, temp_low = fetch_fajardo_temps()
+
     print("Fetching synopsis...")
     synopsis = fetch_synopsis()
     print("  Synopsis: " + (synopsis[:80] + "..." if synopsis else "NOT FOUND"))
@@ -726,7 +811,8 @@ def main():
 
     print("Rendering image...")
     html    = build_html(zones, synopsis, date_str, time_str,
-                         rain_pct, moon_svg_str, moon_name, moon_illum, logo_b64)
+                         rain_pct, moon_svg_str, moon_name, moon_illum,
+                         temp_high, temp_low, logo_b64)
     success = render_jpg(html, FIXED_OUTPUT)
 
     if success:
