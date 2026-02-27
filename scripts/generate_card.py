@@ -29,8 +29,13 @@ NWS_FORECAST_URL        = "https://api.weather.gov/gridpoints/SJU/60,77/forecast
 NWS_FORECAST_HOURLY_URL = "https://api.weather.gov/gridpoints/SJU/60,77/forecast/hourly"
 NWS_GRIDDATA_URL        = "https://api.weather.gov/gridpoints/SJU/60,77"
 
-# Fajardo, PR (18.326, -65.652) -> NWS gridpoint SJU/78,50
-NWS_FAJARDO_URL = "https://api.weather.gov/gridpoints/SJU/78,50/forecast"
+# Fajardo, PR — NWS station TJFA (Fajardo / Diego Jimenez Torres Airport)
+# Strategy 1: latest observation from TJFA station (current temp, always works)
+# Strategy 2: /points lookup to get correct gridpoint forecast URL
+# Strategy 3: hardcoded gridpoint as fallback (SJU/79,49 — verified for Fajardo area)
+NWS_FAJARDO_STATION_URL  = "https://api.weather.gov/stations/TJFA/observations/latest"
+NWS_FAJARDO_POINTS_URL   = "https://api.weather.gov/points/18.3268,-65.6520"
+NWS_FAJARDO_FALLBACK_URL = "https://api.weather.gov/gridpoints/SJU/79,49/forecast"
 
 NWS_ZONES = {
     "atlantic":  "https://tgftp.nws.noaa.gov/data/forecasts/marine/coastal/am/amz711.txt",
@@ -360,52 +365,96 @@ def fetch_rain_probability() -> str:
 # ─────────────────────────────────────────────
 def fetch_fajardo_temps() -> tuple:
     """
-    Fetch today's high and low temperature for Fajardo, PR from NWS.
-    Returns (high_str, low_str) in Fahrenheit e.g. ("88°F", "74°F").
-    Looks at today's daytime period for high and tonight for low.
+    Fetch today's high and low temperature for Fajardo, PR.
+    Returns (high_str, low_str) in °F e.g. ("88°F", "74°F").
+
+    Three strategies in order:
+    1. /points lookup  → resolves exact forecast URL dynamically
+    2. Hardcoded gridpoint fallback (SJU/79,49) if /points fails
+    3. Latest station observation from TJFA for current temp as last resort
     """
-    data = fetch_url(NWS_FAJARDO_URL, as_json=True)
-    if not data:
-        return "N/A", "N/A"
-    try:
-        today = datetime.now(AST).date()
-        high = None
-        low  = None
-        for period in data["properties"]["periods"]:
-            start_str = period.get("startTime", "")
-            try:
-                period_date = datetime.strptime(start_str[:10], "%Y-%m-%d").date()
-            except Exception:
-                continue
-            if period_date != today:
-                continue
-            temp = period.get("temperature")
-            unit = period.get("temperatureUnit", "F")
-            if temp is None:
-                continue
-            # Convert C to F if needed
-            if unit == "C":
-                temp = int(temp * 9 / 5 + 32)
-            if period.get("isDaytime", True):
-                high = str(temp) + "\u00b0F"
-            else:
-                low  = str(temp) + "\u00b0F"
-        # If low not found in today, grab the first night period
-        if low is None:
+    today = datetime.now(AST).date()
+    DEG   = "\u00b0F"
+
+    def parse_forecast(data) -> tuple:
+        """Extract high/low from a NWS /forecast JSON response."""
+        high = low = None
+        try:
             for period in data["properties"]["periods"]:
-                if not period.get("isDaytime", True):
-                    temp = period.get("temperature")
-                    unit = period.get("temperatureUnit", "F")
-                    if temp is not None:
-                        if unit == "C":
-                            temp = int(temp * 9 / 5 + 32)
-                        low = str(temp) + "\u00b0F"
-                        break
-        print(f"  Fajardo temps: high={high}, low={low}")
-        return high or "N/A", low or "N/A"
-    except Exception as e:
-        print(f"  WARNING: Fajardo temp parse error: {e}", file=sys.stderr)
-        return "N/A", "N/A"
+                start_str = period.get("startTime", "")
+                try:
+                    period_date = datetime.strptime(start_str[:10], "%Y-%m-%d").date()
+                except Exception:
+                    continue
+                temp = period.get("temperature")
+                unit = period.get("temperatureUnit", "F")
+                if temp is None:
+                    continue
+                if unit == "C":
+                    temp = int(temp * 9 / 5 + 32)
+                temp = int(temp)
+                if period_date == today:
+                    if period.get("isDaytime", True) and high is None:
+                        high = str(temp) + DEG
+                    elif not period.get("isDaytime", True) and low is None:
+                        low = str(temp) + DEG
+                if high and low:
+                    break
+            # Fallback low: first nighttime period in the whole response
+            if low is None:
+                for period in data["properties"]["periods"]:
+                    if not period.get("isDaytime", True):
+                        temp = period.get("temperature")
+                        unit = period.get("temperatureUnit", "F")
+                        if temp is not None:
+                            if unit == "C":
+                                temp = int(temp * 9 / 5 + 32)
+                            low = str(int(temp)) + DEG
+                            break
+        except Exception as e:
+            print(f"  WARNING: forecast parse error: {e}", file=sys.stderr)
+        return high, low
+
+    # ── Strategy 1: /points lookup ────────────────────────────────────────
+    points = fetch_url(NWS_FAJARDO_POINTS_URL, as_json=True)
+    if points:
+        try:
+            forecast_url = points["properties"]["forecast"]
+            print(f"  Fajardo gridpoint resolved: {forecast_url}")
+            data = fetch_url(forecast_url, as_json=True)
+            if data:
+                high, low = parse_forecast(data)
+                if high:
+                    print(f"  Fajardo temps (via /points): {high} / {low}")
+                    return high, low or "N/A"
+        except Exception as e:
+            print(f"  WARNING: /points strategy failed: {e}", file=sys.stderr)
+
+    # ── Strategy 2: hardcoded gridpoint ───────────────────────────────────
+    print("  Trying hardcoded Fajardo gridpoint...")
+    data = fetch_url(NWS_FAJARDO_FALLBACK_URL, as_json=True)
+    if data:
+        high, low = parse_forecast(data)
+        if high:
+            print(f"  Fajardo temps (hardcoded grid): {high} / {low}")
+            return high, low or "N/A"
+
+    # ── Strategy 3: latest station observation ────────────────────────────
+    print("  Trying TJFA station observation...")
+    obs = fetch_url(NWS_FAJARDO_STATION_URL, as_json=True)
+    if obs:
+        try:
+            temp_c = obs["properties"]["temperature"]["value"]
+            if temp_c is not None:
+                temp_f = int(temp_c * 9 / 5 + 32)
+                current = str(temp_f) + DEG
+                print(f"  Fajardo current temp (TJFA obs): {current}")
+                return current, "—"   # only current temp available, no low
+        except Exception as e:
+            print(f"  WARNING: TJFA obs parse error: {e}", file=sys.stderr)
+
+    print("  WARNING: All Fajardo temp strategies failed", file=sys.stderr)
+    return "N/A", "N/A"
 
 
 def thermometer_svg(size: int = 40) -> str:
