@@ -8,6 +8,7 @@ Output is always saved as: output/marine_forecast.jpg  (fixed name for embedding
 import os
 import re
 import sys
+import base64
 import subprocess
 import tempfile
 import shutil
@@ -25,18 +26,37 @@ NWS_ZONES = {
     "caribbean": "https://tgftp.nws.noaa.gov/data/forecasts/marine/coastal/am/amz733.txt",
 }
 
-SCRIPT_DIR = Path(__file__).parent
-OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", SCRIPT_DIR.parent / "output"))
+SCRIPT_DIR  = Path(__file__).parent
+OUTPUT_DIR  = Path(os.environ.get("OUTPUT_DIR", SCRIPT_DIR.parent / "output"))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-# Fixed output filename — always the same so embedded sites can hotlink it
 FIXED_OUTPUT = OUTPUT_DIR / "marine_forecast.jpg"
+
+
+# ─────────────────────────────────────────────
+# Load logo from logo.jpg in the scripts/ folder
+# ─────────────────────────────────────────────
+def load_logo() -> str:
+    """Return base64-encoded logo string, or empty string if not found."""
+    # Try logo.jpg sitting next to this script
+    for candidate in [
+        SCRIPT_DIR / "logo.jpg",
+        SCRIPT_DIR / "logo.png",
+        SCRIPT_DIR.parent / "logo.jpg",
+        SCRIPT_DIR.parent / "logo.png",
+    ]:
+        if candidate.exists():
+            print(f"  Logo loaded from: {candidate}")
+            raw = candidate.read_bytes()
+            return base64.b64encode(raw).decode("utf-8")
+
+    print("  WARNING: No logo.jpg found — logo will be blank", file=sys.stderr)
+    return ""
 
 
 # ─────────────────────────────────────────────
 # Fetch NWS text
 # ─────────────────────────────────────────────
-def fetch_nws(url):
+def fetch_nws(url: str) -> str:
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "RabirubiaWeather/1.0"})
         with urllib.request.urlopen(req, timeout=20) as r:
@@ -49,7 +69,7 @@ def fetch_nws(url):
 # ─────────────────────────────────────────────
 # Parse a single zone forecast block
 # ─────────────────────────────────────────────
-def parse_zone(text):
+def parse_zone(text: str) -> dict:
     data = {
         "wind": "Check NWS",
         "gusts": "",
@@ -141,7 +161,7 @@ def parse_zone(text):
 # ─────────────────────────────────────────────
 # Build advisory list
 # ─────────────────────────────────────────────
-def get_advisories(zones):
+def get_advisories(zones: dict) -> list:
     found = set()
     for z in zones.values():
         adv = z.get("advisory", "")
@@ -167,7 +187,7 @@ def get_advisories(zones):
 # ─────────────────────────────────────────────
 # Build HTML card
 # ─────────────────────────────────────────────
-def build_html(zones, date_str, logo_b64):
+def build_html(zones: dict, date_str: str, logo_b64: str) -> str:
     atl = zones["atlantic"]
     npr = zones["north_pr"]
     epr = zones["east_pr"]
@@ -175,7 +195,7 @@ def build_html(zones, date_str, logo_b64):
 
     advisories  = get_advisories(zones)
     adv_text    = " | ".join(advisories)
-    has_warning = any(a for a in advisories if "advisory" in a.lower() or "warning" in a.lower())
+    has_warning = any("advisory" in a.lower() or "warning" in a.lower() for a in advisories)
     alert_bg    = "#8b0000, #cc1616, #8b0000" if has_warning else "#0a4a00, #0c7a00, #0a4a00"
 
     synopsis = (atl.get("synopsis") or npr.get("synopsis") or
@@ -183,6 +203,12 @@ def build_html(zones, date_str, logo_b64):
     synopsis = synopsis[:390]
 
     tags_html = "".join('<span class="tag">' + a + '</span>' for a in advisories)
+
+    # Logo img tag — use base64 data URI if available, else hide
+    if logo_b64:
+        logo_img = '<img class="logo" src="data:image/jpeg;base64,' + logo_b64 + '"/>'
+    else:
+        logo_img = '<div style="width:88px;height:88px"></div>'
 
     def zone_td(z, cls, name):
         return (
@@ -206,7 +232,6 @@ def build_html(zones, date_str, logo_b64):
         if any(x in atl["seas"] for x in ["8 ", "9 ", "10", "11", "12", "13", "14", "15"])
         else "Moderate &mdash; check conditions"
     )
-
     precip = atl.get("precip") or "&mdash;"
 
     return """<!DOCTYPE html>
@@ -253,7 +278,7 @@ body{width:1080px;height:1080px;overflow:hidden;background:#060e1f;font-family:A
 <div class="card"><div class="ci">
 
 <div class="hdr"><table><tr>
-  <td style="width:100px"><img class="logo" src="data:image/jpeg;base64,""" + logo_b64 + """"/></td>
+  <td style="width:100px">""" + logo_img + """</td>
   <td style="padding-left:14px">
     <div class="brand">Rabirubia Weather</div>
     <div class="sub">Marine Forecast &mdash; PR &amp; USVI</div>
@@ -315,12 +340,9 @@ body{width:1080px;height:1080px;overflow:hidden;background:#060e1f;font-family:A
 
 
 # ─────────────────────────────────────────────
-# Render HTML to JPG
-# wkhtmltoimage exits with code 1/2 for font or
-# network warnings even when the file is written
-# successfully — we check file existence instead.
+# Render HTML → JPG
 # ─────────────────────────────────────────────
-def render_jpg(html, output_path):
+def render_jpg(html: str, output_path: Path) -> bool:
     with tempfile.NamedTemporaryFile(suffix=".html", delete=False, mode="w", encoding="utf-8") as f:
         f.write(html)
         tmp_html = f.name
@@ -329,35 +351,23 @@ def render_jpg(html, output_path):
 
     try:
         subprocess.run(
-            [
-                "wkhtmltoimage",
-                "--width", "1080",
-                "--height", "1080",
-                "--quality", "95",
-                "--log-level", "none",
-                "--format", "jpg",
-                tmp_html,
-                raw_jpg,
-            ],
-            capture_output=True,
-            text=True,
-            # Do NOT check=True — wkhtmltoimage returns non-zero even on success
+            ["wkhtmltoimage", "--width", "1080", "--height", "1080",
+             "--quality", "95", "--log-level", "none", "--format", "jpg",
+             tmp_html, raw_jpg],
+            capture_output=True, text=True,
+            # Do NOT use check=True — wkhtmltoimage returns non-zero
+            # for font/network warnings even when image renders fine
         )
 
-        # Check the file was actually created and has content
         if not Path(raw_jpg).exists() or Path(raw_jpg).stat().st_size < 5000:
             print("ERROR: wkhtmltoimage did not produce a valid image.", file=sys.stderr)
             return False
 
-        # Crop blank bottom and scale to exact 1080x1080
         try:
             from PIL import Image
             img = Image.open(raw_jpg)
-            w, h = img.size
-            crop_h = min(730, h)
-            cropped = img.crop((0, 0, 1080, crop_h))
-            final = cropped.resize((1080, 1080), Image.LANCZOS)
-            final.save(str(output_path), "JPEG", quality=95)
+            cropped = img.crop((0, 0, 1080, min(730, img.size[1])))
+            cropped.resize((1080, 1080), Image.LANCZOS).save(str(output_path), "JPEG", quality=95)
         except ImportError:
             shutil.move(raw_jpg, str(output_path))
 
@@ -376,31 +386,25 @@ def render_jpg(html, output_path):
 # Main
 # ─────────────────────────────────────────────
 def main():
-    now = datetime.now()
+    now      = datetime.now()
     date_str = now.strftime("%b %d").upper()
 
     print("Rabirubia Weather Card Generator — " + date_str)
     print("Output: " + str(FIXED_OUTPUT))
 
-    # Load logo
-    logo_b64_path = SCRIPT_DIR / "logo_b64.txt"
-    logo_b64 = logo_b64_path.read_text().strip() if logo_b64_path.exists() else ""
-    if not logo_b64:
-        print("WARNING: scripts/logo_b64.txt not found — logo will be blank", file=sys.stderr)
+    print("Loading logo...")
+    logo_b64 = load_logo()
 
-    # Fetch
     print("Fetching NWS forecasts...")
     raw = {name: fetch_nws(url) for name, url in NWS_ZONES.items()}
 
-    # Parse
     print("Parsing forecast data...")
     zones = {name: parse_zone(text) for name, text in raw.items()}
     for name, z in zones.items():
         print("  " + name + ": wind=" + z["wind"] + " | seas=" + z["seas"])
 
-    # Render
     print("Rendering image...")
-    html = build_html(zones, date_str, logo_b64)
+    html    = build_html(zones, date_str, logo_b64)
     success = render_jpg(html, FIXED_OUTPUT)
 
     if success:
