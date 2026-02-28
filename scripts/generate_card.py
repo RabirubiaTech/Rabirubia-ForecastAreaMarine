@@ -34,6 +34,12 @@ NWS_GRIDDATA_URL        = "https://api.weather.gov/gridpoints/SJU/60,77"
 # Strategy 2: /points lookup to get correct gridpoint forecast URL
 # Strategy 3: hardcoded gridpoint as fallback (SJU/79,49 — verified for Fajardo area)
 NWS_FAJARDO_STATION_URL  = "https://api.weather.gov/stations/TJFA/observations/latest"
+# NDBC station FRDP4 — Fajardo harbor, sea temp at 9.8m depth
+NDBC_FRDP4_URL = "https://www.ndbc.noaa.gov/data/realtime2/FRDP4.txt"
+# Fallback: NDBC station 41053 CarICOOS buoy near PR (18.474N 66.099W)
+NDBC_41053_URL = "https://www.ndbc.noaa.gov/data/realtime2/41053.txt"
+# Fallback 2: NOAA CO-OPS API for Fajardo tide station 9753216
+COOPS_FRDP4_URL = "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?station=9753216&product=water_temperature&date=latest&units=english&time_zone=lst_ldt&format=json" 
 NWS_FAJARDO_POINTS_URL   = "https://api.weather.gov/points/18.3268,-65.6520"
 NWS_FAJARDO_FALLBACK_URL = "https://api.weather.gov/gridpoints/SJU/79,49/forecast"
 
@@ -463,6 +469,94 @@ def fetch_fajardo_temps() -> tuple:
     return "N/A", "N/A"
 
 
+def fetch_water_temp() -> str:
+    """
+    Fetch current sea surface water temperature near Fajardo, PR in °F.
+
+    Strategy 1: NDBC station FRDP4 (Fajardo harbor) — WTMP column in realtime2 txt
+    Strategy 2: NDBC station 41053 (CarICOOS buoy near PR)
+    Strategy 3: NOAA CO-OPS tide station 9753216 (Fajardo)
+    """
+    DEG = "\u00b0F"
+
+    def parse_ndbc_txt(text: str) -> str:
+        """Parse NDBC realtime2 text format. WTMP column = water temp in Celsius."""
+        if not text:
+            return None
+        lines = text.strip().splitlines()
+        # Line 0: column headers, Line 1: units, Line 2+: data (newest last or first)
+        if len(lines) < 3:
+            return None
+        headers = lines[0].lstrip("#").split()
+        try:
+            wtmp_idx = headers.index("WTMP")
+        except ValueError:
+            return None
+        # First data line (index 2) is most recent
+        for line in lines[2:]:
+            parts = line.split()
+            if len(parts) <= wtmp_idx:
+                continue
+            val = parts[wtmp_idx]
+            if val in ("MM", "99.0", "999", "9999"):   # NDBC missing data codes
+                continue
+            try:
+                temp_c = float(val)
+                temp_f = round(temp_c * 9 / 5 + 32, 1)
+                return str(int(round(temp_f))) + DEG
+            except ValueError:
+                continue
+        return None
+
+    # Strategy 1: FRDP4 Fajardo harbor
+    text = fetch_url(NDBC_FRDP4_URL)
+    result = parse_ndbc_txt(text)
+    if result:
+        print(f"  Water temp (FRDP4): {result}")
+        return result
+
+    # Strategy 2: 41053 CarICOOS buoy
+    text = fetch_url(NDBC_41053_URL)
+    result = parse_ndbc_txt(text)
+    if result:
+        print(f"  Water temp (41053): {result}")
+        return result
+
+    # Strategy 3: NOAA CO-OPS API
+    data = fetch_url(COOPS_FRDP4_URL, as_json=True)
+    if data:
+        try:
+            val = data["data"][0]["v"]
+            temp_f = float(val)
+            result = str(int(round(temp_f))) + DEG
+            print(f"  Water temp (CO-OPS): {result}")
+            return result
+        except Exception as e:
+            print(f"  WARNING: CO-OPS water temp parse error: {e}", file=sys.stderr)
+
+    print("  WARNING: All water temp strategies failed", file=sys.stderr)
+    return "N/A"
+
+
+def waves_svg(size: int = 40) -> str:
+    """Simple ocean wave SVG icon for water temperature."""
+    s = size
+    return (
+        f'<svg width="{s}" height="{s}" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">'
+        f'<path d="M2 24 C7 18, 13 18, 18 24 C23 30, 29 30, 38 24" '
+        f'stroke="#4dd0e1" stroke-width="3.5" fill="none" stroke-linecap="round"/>'
+        f'<path d="M2 32 C7 26, 13 26, 18 32 C23 38, 29 38, 38 32" '
+        f'stroke="#00acc1" stroke-width="3" fill="none" stroke-linecap="round" opacity="0.7"/>'
+        f'<path d="M2 16 C7 10, 13 10, 18 16 C23 22, 29 22, 38 16" '
+        f'stroke="#80deea" stroke-width="2.5" fill="none" stroke-linecap="round" opacity="0.5"/>'
+        f'<circle cx="20" cy="10" r="5" fill="#ffcc00" opacity="0.9"/>'
+        f'<line x1="20" y1="2" x2="20" y2="0" stroke="#ffcc00" stroke-width="2"/>'
+        f'<line x1="27" y1="4" x2="28" y2="3" stroke="#ffcc00" stroke-width="2"/>'
+        f'<line x1="13" y1="4" x2="12" y2="3" stroke="#ffcc00" stroke-width="2"/>'
+        f'</svg>'
+    )
+
+
 def thermometer_svg(size: int = 40) -> str:
     """Simple thermometer SVG icon in warm red/orange."""
     s = size
@@ -584,7 +678,7 @@ def get_advisories(zones: dict) -> list:
 # ─────────────────────────────────────────────
 def build_html(zones, synopsis, date_str, time_str,
                rain_pct, moon_svg_str, moon_name, moon_illum,
-               temp_high, temp_low,
+               temp_high, temp_low, water_temp,
                logo_b64) -> str:
 
     atl = zones["atlantic"]
@@ -645,7 +739,7 @@ body{width:1080px;height:1080px;overflow:hidden;background:#060e1f;font-family:A
 
 /* INFO BAR */
 .infobar{background:rgba(0,0,0,0.4);border-bottom:1px solid rgba(255,255,255,0.12);padding:9px 28px;text-align:center}
-.pill{display:inline-block;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.18);border-radius:40px;padding:6px 18px 6px 10px;margin:0 7px;vertical-align:middle}
+.pill{display:inline-block;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.18);border-radius:40px;padding:5px 14px 5px 9px;margin:0 5px;vertical-align:middle}
 .pill-icon{display:inline-block;vertical-align:middle;margin-right:8px}
 .pill-text{display:inline-block;vertical-align:middle;text-align:left}
 .pill-label{font-size:9px;color:#88bbdd;text-transform:uppercase;letter-spacing:1.5px;display:block;line-height:1;margin-bottom:3px}
@@ -702,8 +796,35 @@ body{width:1080px;height:1080px;overflow:hidden;background:#060e1f;font-family:A
   </td>
 </tr></table></div>
 
-<!-- INFO BAR: Moon + Rain + Fajardo Temp -->
+<!-- INFO BAR: Rain → Air Temp → Water Temp → Moon -->
 <div class="infobar">
+
+  <div class="pill">
+    <span class="pill-icon">""" + rain_svg(40) + """</span>
+    <span class="pill-text">
+      <span class="pill-label">Rain Probability</span>
+      <span class="pill-value">""" + rain_pct + """</span>
+      <span class="pill-sub">San Juan area today</span>
+    </span>
+  </div>
+
+  <div class="pill">
+    <span class="pill-icon">""" + thermometer_svg(40) + """</span>
+    <span class="pill-text">
+      <span class="pill-label">Fajardo Air Temp</span>
+      <span class="pill-value">""" + temp_high + """ / """ + temp_low + """</span>
+      <span class="pill-sub">High / Low</span>
+    </span>
+  </div>
+
+  <div class="pill">
+    <span class="pill-icon">""" + waves_svg(40) + """</span>
+    <span class="pill-text">
+      <span class="pill-label">Water Temp</span>
+      <span class="pill-value">""" + water_temp + """</span>
+      <span class="pill-sub">Fajardo area</span>
+    </span>
+  </div>
 
   <div class="pill">
     <span class="pill-icon">""" + moon_svg_str + """</span>
@@ -711,24 +832,6 @@ body{width:1080px;height:1080px;overflow:hidden;background:#060e1f;font-family:A
       <span class="pill-label">Moon Phase</span>
       <span class="pill-value">""" + moon_name + """</span>
       <span class="pill-sub">""" + str(moon_illum) + """% illuminated</span>
-    </span>
-  </div>
-
-  <div class="pill">
-    <span class="pill-icon">""" + rain_svg(40) + """</span>
-    <span class="pill-text">
-      <span class="pill-label">Rain Probability Today</span>
-      <span class="pill-value">""" + rain_pct + """</span>
-      <span class="pill-sub">San Juan area</span>
-    </span>
-  </div>
-
-  <div class="pill">
-    <span class="pill-icon">""" + thermometer_svg(40) + """</span>
-    <span class="pill-text">
-      <span class="pill-label">Fajardo Temp Today</span>
-      <span class="pill-value">""" + temp_high + """ / """ + temp_low + """</span>
-      <span class="pill-sub">High / Low</span>
     </span>
   </div>
 
@@ -852,6 +955,10 @@ def main():
     print("Fetching Fajardo temperatures...")
     temp_high, temp_low = fetch_fajardo_temps()
 
+    print("Fetching Fajardo water temperature...")
+    water_temp = fetch_water_temp()
+    print(f"  Water temp: {water_temp}")
+
     print("Fetching synopsis...")
     synopsis = fetch_synopsis()
     print("  Synopsis: " + (synopsis[:80] + "..." if synopsis else "NOT FOUND"))
@@ -867,7 +974,7 @@ def main():
     print("Rendering image...")
     html    = build_html(zones, synopsis, date_str, time_str,
                          rain_pct, moon_svg_str, moon_name, moon_illum,
-                         temp_high, temp_low, logo_b64)
+                         temp_high, temp_low, water_temp, logo_b64)
     success = render_jpg(html, FIXED_OUTPUT)
 
     if success:
