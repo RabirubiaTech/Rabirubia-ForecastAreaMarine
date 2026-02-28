@@ -206,13 +206,13 @@ def get_moon_phase() -> tuple:
 # ─────────────────────────────────────────────
 def load_logo() -> str:
     for candidate in [
-        SCRIPT_DIR / "logo.png",
-        SCRIPT_DIR.parent / "logo.png",
+        SCRIPT_DIR / "logo.jpg",
+        SCRIPT_DIR.parent / "logo.jpg",
     ]:
         if candidate.exists():
             print(f"  Logo loaded: {candidate}")
             return base64.b64encode(candidate.read_bytes()).decode("utf-8")
-    print("  WARNING: No logo.png found", file=sys.stderr)
+    print("  WARNING: No logo.jpg found", file=sys.stderr)
     return ""
 
 
