@@ -4,7 +4,7 @@ on:
   # 6:30 AM AST = 10:30 AM UTC  (Puerto Rico is UTC-4, no daylight saving)
   on:
   schedule:
-  - cron: "30 4,10,16,22 * * *"
+    - cron: "30 4,10,16,22 * * *"
 
   # Allow manual run from the Actions tab at any time
   workflow_dispatch:
