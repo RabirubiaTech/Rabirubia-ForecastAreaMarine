@@ -1,10 +1,13 @@
 name: Daily Marine Weather Card
 
 on:
-  # 6:30 AM AST = 10:30 AM UTC  (Puerto Rico is UTC-4, no daylight saving)
-  on:
+  # Runs every 6 hours starting at 6:30 AM AST (Puerto Rico is UTC-4, no DST)
+  # 6:30 AM AST  = 10:30 UTC
+  # 12:30 PM AST = 16:30 UTC
+  # 6:30 PM AST  = 22:30 UTC
+  # 12:30 AM AST = 04:30 UTC
   schedule:
-    - cron: "30 4 10 16 22 * * *"
+    - cron: "30 10,16,22,4 * * *"
 
   # Allow manual run from the Actions tab at any time
   workflow_dispatch:
