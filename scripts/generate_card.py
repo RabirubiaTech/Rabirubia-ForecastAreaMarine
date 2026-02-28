@@ -207,7 +207,9 @@ def get_moon_phase() -> tuple:
 def load_logo() -> str:
     for candidate in [
         SCRIPT_DIR / "logo.jpg",
+        SCRIPT_DIR / "logo.png",
         SCRIPT_DIR.parent / "logo.jpg",
+        SCRIPT_DIR.parent / "logo.png",
     ]:
         if candidate.exists():
             print(f"  Logo loaded: {candidate}")
@@ -375,8 +377,13 @@ def fetch_fajardo_temps() -> tuple:
     DEG   = "\u00b0F"
 
     def parse_forecast(data) -> tuple:
-        """Extract high/low from a NWS /forecast JSON response."""
+        """
+        Extract high/low from a NWS /forecast JSON response.
+        When the script runs in afternoon/evening, today's daytime period
+        may already be gone — fall back to the next available periods.
+        """
         high = low = None
+        first_day = first_night = None
         try:
             for period in data["properties"]["periods"]:
                 start_str = period.get("startTime", "")
@@ -391,26 +398,27 @@ def fetch_fajardo_temps() -> tuple:
                 if unit == "C":
                     temp = int(temp * 9 / 5 + 32)
                 temp = int(temp)
+                is_day = period.get("isDaytime", True)
+                # Track first available periods as ultimate fallback
+                if is_day and first_day is None:
+                    first_day = str(temp) + DEG
+                if not is_day and first_night is None:
+                    first_night = str(temp) + DEG
+                # Prefer today specifically
                 if period_date == today:
-                    if period.get("isDaytime", True) and high is None:
+                    if is_day and high is None:
                         high = str(temp) + DEG
-                    elif not period.get("isDaytime", True) and low is None:
+                    elif not is_day and low is None:
                         low = str(temp) + DEG
                 if high and low:
                     break
-            # Fallback low: first nighttime period in the whole response
-            if low is None:
-                for period in data["properties"]["periods"]:
-                    if not period.get("isDaytime", True):
-                        temp = period.get("temperature")
-                        unit = period.get("temperatureUnit", "F")
-                        if temp is not None:
-                            if unit == "C":
-                                temp = int(temp * 9 / 5 + 32)
-                            low = str(int(temp)) + DEG
-                            break
         except Exception as e:
             print(f"  WARNING: forecast parse error: {e}", file=sys.stderr)
+        # If today daytime already passed, use next available
+        if high is None:
+            high = first_day
+        if low is None:
+            low = first_night
         return high, low
 
     # ── Strategy 1: /points lookup ────────────────────────────────────────
@@ -686,7 +694,7 @@ body{width:1080px;height:1080px;overflow:hidden;background:#060e1f;font-family:A
   <td style="width:94px">""" + logo_img + """</td>
   <td style="padding-left:14px">
     <div class="brand">Rabirubia Weather</div>
-    <div class="sub">Today's Marine Forecast &mdash; PR &amp; USVI</div>
+    <div class="sub">Marine Forecast &mdash; PR &amp; USVI</div>
   </td>
   <td style="width:230px">
     <div class="datebig">""" + date_str + """</div>
@@ -776,7 +784,7 @@ body{width:1080px;height:1080px;overflow:hidden;background:#060e1f;font-family:A
 
 <!-- FOOTER -->
 <div class="ftr"><table><tr>
-  <td class="fsrc">Source: NWS San Juan &middot; NOAA | RabirubiaWeather.com / RabirubiaTech</td>
+  <td class="fsrc">Source: NWS San Juan &middot; NOAA</td>
   <td class="furl">www.rabirubiaweather.com</td>
 </tr></table></div>
 
