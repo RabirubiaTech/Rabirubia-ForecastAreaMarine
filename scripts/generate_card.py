@@ -887,7 +887,7 @@ body{width:1080px;height:1080px;overflow:hidden;background:#060e1f;font-family:A
 
 <!-- FOOTER -->
 <div class="ftr"><table><tr>
-  <td class="fsrc">Source: NWS San Juan &middot; NOAA</td>
+  <td class="fsrc">Source: NWS San Juan &middot; NOAA | RabirubiaWeather.com - RabirubiaTech</td>
   <td class="furl">www.rabirubiaweather.com</td>
 </tr></table></div>
 
