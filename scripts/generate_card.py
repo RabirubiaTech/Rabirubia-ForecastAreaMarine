@@ -686,7 +686,7 @@ body{width:1080px;height:1080px;overflow:hidden;background:#060e1f;font-family:A
   <td style="width:94px">""" + logo_img + """</td>
   <td style="padding-left:14px">
     <div class="brand">Rabirubia Weather</div>
-    <div class="sub">Marine Forecast &mdash; PR &amp; USVI</div>
+    <div class="sub">Today's Marine Forecast &mdash; PR &amp; USVI</div>
   </td>
   <td style="width:230px">
     <div class="datebig">""" + date_str + """</div>
