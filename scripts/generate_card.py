@@ -210,18 +210,20 @@ def get_moon_phase() -> tuple:
 # ─────────────────────────────────────────────
 # Logo loader
 # ─────────────────────────────────────────────
-def load_logo() -> str:
+def load_logo() -> tuple:
+    """Returns (b64_string, mime_type) so PNG transparency is preserved."""
     for candidate in [
-        SCRIPT_DIR / "logo.jpg",
-        SCRIPT_DIR / "logo.png",
-        SCRIPT_DIR.parent / "logo.jpg",
+        SCRIPT_DIR / "logo.png",          # prefer PNG — keeps transparency
         SCRIPT_DIR.parent / "logo.png",
+        SCRIPT_DIR / "logo.jpg",
+        SCRIPT_DIR.parent / "logo.jpg",
     ]:
         if candidate.exists():
-            print(f"  Logo loaded: {candidate}")
-            return base64.b64encode(candidate.read_bytes()).decode("utf-8")
-    print("  WARNING: No logo.jpg found", file=sys.stderr)
-    return ""
+            mime = "image/png" if candidate.suffix == ".png" else "image/jpeg"
+            print(f"  Logo loaded: {candidate} ({mime})")
+            return base64.b64encode(candidate.read_bytes()).decode("utf-8"), mime
+    print("  WARNING: No logo file found", file=sys.stderr)
+    return "", "image/jpeg"
 
 
 # ─────────────────────────────────────────────
@@ -679,7 +681,7 @@ def get_advisories(zones: dict) -> list:
 def build_html(zones, synopsis, date_str, time_str,
                rain_pct, moon_svg_str, moon_name, moon_illum,
                temp_high, temp_low, water_temp,
-               logo_b64) -> str:
+               logo_b64, logo_mime) -> str:
 
     atl = zones["atlantic"]
     npr = zones["north_pr"]
@@ -689,14 +691,14 @@ def build_html(zones, synopsis, date_str, time_str,
     advisories  = get_advisories(zones)
     adv_text    = " &nbsp;|&nbsp; ".join(advisories)
     has_warning = any("advisory" in a.lower() or "warning" in a.lower() for a in advisories)
-    alert_bg    = "#8b0000, #cc1616, #8b0000" if has_warning else "#0a4a00, #0c7a00, #0a4a00"
+    alert_bg    = "#7a4010, #c06020, #7a4010" if has_warning else "#0a5020, #0f8035, #0a5020"
 
     if not synopsis:
         synopsis = "Synopsis unavailable — visit weather.gov/sju for current marine forecast."
     tags_html = "".join('<span class="tag">' + a + '</span>' for a in advisories)
 
-    logo_img = ('<img class="logo" src="data:image/jpeg;base64,' + logo_b64 + '"/>'
-                if logo_b64 else '<div style="width:84px;height:84px"></div>')
+    logo_img = ('<img class="logo" src="data:' + logo_mime + ';base64,' + logo_b64 + '"/>'
+                if logo_b64 else '<div style="width:108px;height:108px"></div>')
 
     def zone_td(z, cls, name):
         return (
@@ -724,17 +726,17 @@ def build_html(zones, synopsis, date_str, time_str,
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{width:1080px;height:1080px;overflow:hidden;background:#060e1f;font-family:Arial,Helvetica,sans-serif}
-.card{width:1080px;height:1080px;background:linear-gradient(145deg,#060e1f 0%,#0a1f3d 45%,#071428 100%);display:table}
+.card{width:1080px;height:1080px;background:linear-gradient(145deg,#0d1a35 0%,#132444 45%,#0e1e3a 100%);display:table}
 .ci{display:table-cell;vertical-align:top}
 
 /* HEADER */
-.hdr{background:linear-gradient(135deg,#0d2050,#142e6e);padding:15px 28px 13px;border-bottom:3px solid #cc1818}
+.hdr{background:linear-gradient(135deg,#1a3160,#243d7a);padding:15px 28px 13px;border-bottom:3px solid #e07030}
 .hdr table{width:100%;border-collapse:collapse}
 .hdr td{vertical-align:middle;padding:0}
-.logo{width:82px;height:82px;object-fit:contain;display:block}
+.logo{width:108px;height:108px;object-fit:contain;display:block}
 .brand{font-family:'Arial Black',Impact,sans-serif;font-size:33px;font-weight:900;color:#ffffff;letter-spacing:2px;text-transform:uppercase;line-height:1}
-.sub{font-size:12px;color:#aaddff;letter-spacing:3px;text-transform:uppercase;margin-top:4px}
-.datebig{font-family:'Arial Black',Impact,sans-serif;font-size:42px;font-weight:900;color:#dd1c1c;line-height:1;text-align:right}
+.sub{font-size:12px;color:#b8d4f0;letter-spacing:3px;text-transform:uppercase;margin-top:4px}
+.datebig{font-family:'Arial Black',Impact,sans-serif;font-size:42px;font-weight:900;color:#f08030;line-height:1;text-align:right}
 .datetime{font-family:'Arial Black',Impact,sans-serif;font-size:15px;font-weight:900;color:#ffffff;letter-spacing:2px;text-align:right;margin-top:4px}
 
 /* INFO BAR */
@@ -742,9 +744,9 @@ body{width:1080px;height:1080px;overflow:hidden;background:#060e1f;font-family:A
 .pill{display:inline-block;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.18);border-radius:40px;padding:5px 14px 5px 9px;margin:0 5px;vertical-align:middle}
 .pill-icon{display:inline-block;vertical-align:middle;margin-right:8px}
 .pill-text{display:inline-block;vertical-align:middle;text-align:left}
-.pill-label{font-size:9px;color:#88bbdd;text-transform:uppercase;letter-spacing:1.5px;display:block;line-height:1;margin-bottom:3px}
+.pill-label{font-size:9px;color:#90b8d8;text-transform:uppercase;letter-spacing:1.5px;display:block;line-height:1;margin-bottom:3px}
 .pill-value{font-family:'Arial Black',Impact,sans-serif;font-size:16px;font-weight:900;color:#ffffff;letter-spacing:1px;display:block;line-height:1}
-.pill-sub{font-size:10px;color:#aaccee;margin-top:2px;display:block}
+.pill-sub{font-size:10px;color:#b8d4f0;margin-top:2px;display:block}
 
 /* ADVISORY */
 .alert{background:linear-gradient(90deg,""" + alert_bg + """);padding:9px 28px;color:#ffffff;font-family:'Arial Narrow',Arial,sans-serif;font-size:14px;font-weight:700;letter-spacing:2px;text-transform:uppercase;text-align:center}
@@ -753,39 +755,39 @@ body{width:1080px;height:1080px;overflow:hidden;background:#060e1f;font-family:A
 .grid{width:100%;padding:10px 14px 6px}
 .gt{width:100%;border-collapse:separate;border-spacing:7px}
 .gt td{width:25%;vertical-align:top;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.15);border-radius:10px;padding:12px}
-.z1{border-top:3px solid #1e88e5!important}
-.z2{border-top:3px solid #0288d1!important}
-.z3{border-top:3px solid #00acc1!important}
-.z4{border-top:3px solid #00897b!important}
-.zone-name{font-family:'Arial Narrow',Arial,sans-serif;font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#aaddff;margin-bottom:9px;line-height:1.4;border-bottom:2px solid rgba(255,255,255,.15);padding-bottom:6px}
+.z1{border-top:3px solid #4a9ede!important}
+.z2{border-top:3px solid #38b8c8!important}
+.z3{border-top:3px solid #30c8a8!important}
+.z4{border-top:3px solid #38b870!important}
+.zone-name{font-family:'Arial Narrow',Arial,sans-serif;font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;color:#b0d8f0;margin-bottom:9px;line-height:1.4;border-bottom:2px solid rgba(255,255,255,.15);padding-bottom:6px}
 .stat{margin-bottom:8px}
-.stat-lbl{font-size:9px;color:#88bbdd;text-transform:uppercase;letter-spacing:1.5px;line-height:1;margin-bottom:2px}
+.stat-lbl{font-size:9px;color:#7aa8c8;text-transform:uppercase;letter-spacing:1.5px;line-height:1;margin-bottom:2px}
 .stat-val{font-family:'Arial Black',Impact,sans-serif;font-size:19px;font-weight:900;color:#ffffff;line-height:1.1}
 .stat-note{font-size:11px;color:#ffffff;line-height:1.3}
 
 /* BOTTOM */
 .bt{width:100%;border-collapse:separate;border-spacing:7px}
 .bt td{vertical-align:top;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:12px}
-.stitle{font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#aaddff;margin-bottom:7px}
+.stitle{font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#b0d8f0;margin-bottom:7px}
 .bval{font-family:'Arial Black',Impact,sans-serif;font-size:17px;font-weight:900;color:#ffffff;line-height:1.1;margin-bottom:2px}
 .bnote{font-size:11px;color:#ffffff;line-height:1.4}
-.blbl{font-size:9px;color:#88bbdd;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:2px}
+.blbl{font-size:9px;color:#7aa8c8;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:2px}
 .stext{font-size:12px;color:#ffffff;line-height:1.6}
 .tags{margin-top:8px}
-.tag{display:inline-block;background:rgba(160,20,20,.3);border:1px solid rgba(220,60,60,.6);border-radius:20px;padding:3px 10px;font-size:10px;color:#ffaaaa;letter-spacing:.8px;text-transform:uppercase;font-weight:700;margin:3px 3px 0 0}
+.tag{display:inline-block;background:rgba(200,100,20,.25);border:1px solid rgba(230,130,40,.55);border-radius:20px;padding:3px 10px;font-size:10px;color:#f0b070;letter-spacing:.8px;text-transform:uppercase;font-weight:700;margin:3px 3px 0 0}
 
 /* FOOTER */
 .ftr{background:rgba(0,0,0,.4);border-top:1px solid rgba(255,255,255,.1);padding:9px 28px}
 .ftr table{width:100%;border-collapse:collapse}
-.fsrc{font-size:11px;color:#6699bb}
-.furl{font-family:'Arial Narrow',Arial,sans-serif;font-size:16px;font-weight:700;color:#4db8ff;letter-spacing:1px;text-align:right}
+.fsrc{font-size:11px;color:#5a80a0}
+.furl{font-family:'Arial Narrow',Arial,sans-serif;font-size:16px;font-weight:700;color:#60a8e0;letter-spacing:1px;text-align:right}
 </style></head>
 <body>
 <div class="card"><div class="ci">
 
 <!-- HEADER -->
 <div class="hdr"><table><tr>
-  <td style="width:94px">""" + logo_img + """</td>
+  <td style="width:116px">""" + logo_img + """</td>
   <td style="padding-left:14px">
     <div class="brand">Rabirubia Weather</div>
     <div class="sub">Marine Forecast &mdash; PR &amp; USVI</div>
@@ -887,7 +889,7 @@ body{width:1080px;height:1080px;overflow:hidden;background:#060e1f;font-family:A
 
 <!-- FOOTER -->
 <div class="ftr"><table><tr>
-  <td class="fsrc">Source: NWS San Juan &middot; NOAA | RabirubiaWeather.com - RabirubiaTech</td>
+  <td class="fsrc">Source: NWS San Juan &middot; NOAA</td>
   <td class="furl">www.rabirubiaweather.com</td>
 </tr></table></div>
 
@@ -942,7 +944,7 @@ def main():
     print("Output: " + str(FIXED_OUTPUT))
 
     print("Loading logo...")
-    logo_b64 = load_logo()
+    logo_b64, logo_mime = load_logo()
 
     print("Calculating moon phase...")
     moon_svg_str, moon_name, moon_illum, cycle_pos = get_moon_phase()
@@ -974,7 +976,7 @@ def main():
     print("Rendering image...")
     html    = build_html(zones, synopsis, date_str, time_str,
                          rain_pct, moon_svg_str, moon_name, moon_illum,
-                         temp_high, temp_low, water_temp, logo_b64)
+                         temp_high, temp_low, water_temp, logo_b64, logo_mime)
     success = render_jpg(html, FIXED_OUTPUT)
 
     if success:
