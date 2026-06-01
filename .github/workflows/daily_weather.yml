@@ -2,7 +2,7 @@ name: Daily Marine Weather Card
 
 on:
   schedule:
-    - cron: "30 09,13,17,21 * * *"
+    - cron: "30 08,12,16,20 * * *"
   # Allow manual run from the Actions tab at any time
   workflow_dispatch:
 
